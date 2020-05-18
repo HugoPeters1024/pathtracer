@@ -62,6 +62,7 @@ void main()
   if (storePos.x >= 640 || storePos.y >= 480) return;
 
   vec2 uv = vec2(float(gl_GlobalInvocationID.x), float(gl_GlobalInvocationID.y)) / vec2(640, 480);
+  uv = uv * 2 - vec2(1);
 
   vec3 tangent = cross(viewdir, vec3(0,0,1));
   vec3 bitangent = cross(viewdir, tangent);
@@ -93,6 +94,14 @@ struct Triangle {
    vec4 v0;
    vec4 v1;
    vec4 v2;
+   vec4 color;
+};
+
+struct AABB {
+  vec4 vmin;
+  vec4 vmax;
+  vec4 color;
+  vec4 luminance;
 };
 
 layout(std430, binding = 1) buffer triangleBuf
@@ -105,12 +114,60 @@ layout(std430, binding = 2) buffer rayBuf
   Ray rays[];
 };
 
+layout(std430, binding = 3) buffer aabbBuf
+{
+  AABB boundingBoxes[];
+};
+
 
 layout(location = 0) uniform float time;
+
 ivec2 screen_size = ivec2(640, 480);
+vec3 seed;
+
+// A single iteration of Bob Jenkins' One-At-A-Time hashing algorithm.
+uint hash( uint x ) {
+    x += ( x << 10u );
+    x ^= ( x >>  6u );
+    x += ( x <<  3u );
+    x ^= ( x >> 11u );
+    x += ( x << 15u );
+    return x;
+}
 
 
-bool intersect(in Ray ray, in Triangle triangle) {
+
+// Compound versions of the hashing algorithm I whipped together.
+uint hash( uvec2 v ) { return hash( v.x ^ hash(v.y)                         ); }
+uint hash( uvec3 v ) { return hash( v.x ^ hash(v.y) ^ hash(v.z)             ); }
+uint hash( uvec4 v ) { return hash( v.x ^ hash(v.y) ^ hash(v.z) ^ hash(v.w) ); }
+
+
+
+// Construct a float with half-open range [0:1] using low 23 bits.
+// All zeroes yields 0.0, all ones yields the next smallest representable value below 1.0.
+float floatConstruct( uint m ) {
+    const uint ieeeMantissa = 0x007FFFFFu; // binary32 mantissa bitmask
+    const uint ieeeOne      = 0x3F800000u; // 1.0 in IEEE binary32
+
+    m &= ieeeMantissa;                     // Keep only mantissa bits (fractional part)
+    m |= ieeeOne;                          // Add fractional part to 1.0
+
+    float  f = uintBitsToFloat( m );       // Range [1:2]
+    return f - 1.0;                        // Range [0:1]
+}
+
+
+
+// Pseudo-random value in half-open range [0:1].
+float random( float x ) { return floatConstruct(hash(floatBitsToUint(x))); }
+float random( vec2  v ) { return floatConstruct(hash(floatBitsToUint(v))); }
+float random( vec3  v ) { return floatConstruct(hash(floatBitsToUint(v))); }
+float random( vec4  v ) { return floatConstruct(hash(floatBitsToUint(v))); }
+float rand() { float r =  random(seed); seed.z = r; return r; }
+
+
+bool intersect(inout Ray ray, in Triangle triangle, out vec3 normal) {
     vec3 ray_origin = ray.origin.xyz;
     vec3 ray_direction = ray.direction.xyz;
     vec3 v0 = triangle.v0.xyz;
@@ -134,6 +191,7 @@ bool intersect(in Ray ray, in Triangle triangle) {
 
     // compute t (equation 3)
     float t = -(dot(N, ray_origin) + d) / NdotRayDirection;
+
     // check if the triangle is in behind the ray
     if (t < 0) return false; // the triangle is behind
 
@@ -165,25 +223,105 @@ bool intersect(in Ray ray, in Triangle triangle) {
     // behind test already done
     if (t < ray.origin.w) {
       ray.origin.w = t;
+      normal = cross(edge0, edge1);
       return true;
     }
 
     return false;
 }
 
+bool intersect(inout Ray ray, int index) {
+    AABB box = boundingBoxes[index];
+    float tx1 = (box.vmin.x - ray.origin.x)/ray.direction.x;
+    float tx2 = (box.vmax.x - ray.origin.x)/ray.direction.x;
+
+    float tmin = min(tx1, tx2);
+    float tmax = max(tx1, tx2);
+
+    float ty1 = (box.vmin.y - ray.origin.y)/ray.direction.y;
+    float ty2 = (box.vmax.y - ray.origin.y)/ray.direction.y;
+
+    tmin = max(tmin, min(ty1, ty2));
+    tmax = min(tmax, max(ty1, ty2));
+
+    float tz1 = (box.vmin.z - ray.origin.z)/ray.direction.z;
+    float tz2 = (box.vmax.z - ray.origin.z)/ray.direction.z;
+
+    tmin = max(tmin, min(tz1, tz2));
+    tmax = min(tmax, max(tz1, tz2));
+
+    if (tmax >= tmin && tmax >= 0 && tmin < ray.origin.w)
+    {
+        ray.origin.w = tmin;
+        return true;
+    }
+
+    return false;
+}
+
+
+
+vec3 sampleHalfDome(vec3 normal) {
+   float x = rand();
+   float y = rand();
+   float z = rand();
+   vec3 ret = vec3(x,y,z);
+   return dot(ret, normal) < 0 ? -ret : ret;
+}
+
+vec3 recoverNormalFromAABB(int index, vec3 point)
+{
+      AABB box = boundingBoxes[index];
+      vec3 center = (box.vmin.xyz + box.vmax.xyz) * 0.5;
+      vec3 vmin_point = abs(point - box.vmin.xyz);
+      vec3 vmax_point = abs(point - box.vmax.xyz);
+      if (min(vmin_point.x, vmax_point.x) < 0.0005) return vec3(1 * sign(point.x - center.x),0,0);
+      if (min(vmin_point.y, vmax_point.y) < 0.0005) return vec3(0,1 * sign(point.y - center.y),0);
+      if (min(vmin_point.z, vmax_point.z) < 0.0005) return vec3(0,0,1 * sign(point.z - center.z));
+      return vec3(0);
+}
+
 void main()
 {
+  seed = vec3(gl_GlobalInvocationID.xy, time);
   ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
-  imageStore(destTex, storePos, vec4(0,0,0,1));
+  imageStore(destTex, storePos, vec4(0) );
+
   Ray ray = rays[storePos.x + screen_size.x * storePos.y];
 
-  for(int t=0; t<1; t++)
-  {
-    Triangle triangle = triangles[t];
+  int collider = -1;
 
-    if (intersect(ray, triangle))
-      imageStore(destTex, storePos, vec4(0,1,0,1));
+  for(int b=0; b<3; b++)
+  {
+      if (intersect(ray, b))
+         collider = b;
   }
+
+  if (collider == -1) return;
+
+  vec3 point = ray.origin.xyz + ray.direction.xyz * ray.origin.w;
+  vec3 normal = recoverNormalFromAABB(collider, point);
+
+  // shadow rays;
+  vec4 totalLight = vec4(0);
+  for(int i=0; i<400; i++) {
+    Ray shadowRay;
+    shadowRay.origin = vec4(ray.origin.xyz + (ray.origin.w - 0.001) * ray.direction.xyz, 100);
+    shadowRay.direction = vec4(vec3(0,0,1)*0.7 + 0.3*sampleHalfDome(normal),0);
+
+    int lightsource = -1;
+    for(int b=0; b<3; b++)
+    {
+        if (intersect(shadowRay, b))
+           lightsource = b;
+    }
+
+    if (lightsource == -1) continue;
+    totalLight += boundingBoxes[lightsource].luminance;
+  }
+  totalLight /= 400;
+  vec4 color = boundingBoxes[collider].color * totalLight;
+  imageStore(destTex, storePos, color );
 }
 )";
 
@@ -197,6 +335,15 @@ struct Triangle
     Vector4 v0;
     Vector4 v1;
     Vector4 v2;
+    Vector4 color;
+};
+
+struct AABB
+{
+    Vector4 vmin;
+    Vector4 vmax;
+    Vector4 color;
+    Vector4 luminance;
 };
 
 struct Ray
@@ -232,14 +379,35 @@ int main() {
   auto cs = CompileShader(GL_COMPUTE_SHADER, cs_pathtrace_shader);
   auto cs_program = GenerateProgram(cs);
 
-  Triangle triangles[1] = {
-          { { 0.2, 1, 0.2, 0 }, { 0.8, 1, 0.2, 0}, { 0.5, 1, 0.8, 0 } },
+  Triangle triangles[6] = {
+          // Left wall
+          { { -1, 0, -1, 0 }, { -1, 0, 1, 0}, { -1, 4, -1, 0 }, {0, 0, 1, 1} },
+          { { -1, 0, 1, 0 }, { -1, 4, -1, 0}, { -1, 4, 1, 0 }, {0, 0, 1, 1} },
+
+          // Right wall
+          { { 1, 0, -1, 0 }, { 1, 0, 1, 0}, { 1, 4, -1, 0 }, {0, 0, 1, 1} },
+          { { 1, 0, 1, 0 }, { 1, 4, -1, 0}, { 1, 4, 1, 0 }, {0, 0, 1, 1} },
+
+          // Floor
+          { { -1, 0, -1, 0}, {-1, 4, -1, 0}, { 1, 4, -1, 0}, {1,1,1,1} },
+          { { 1, 0, -1, 0}, {1, 4, -1, 0}, { -1, 0, -1, 0}, {1,1,1,1} },
+  };
+
+  AABB boundingBoxes[3] = {
+          { { -1, 2, -1, 0}, { 1, 4, -1.2, 0}, { 1, 0, 0, 1}, { 0, 0, 0, 0 }},
+          { { -0.4, 2.5, -0.2, 0}, { 0.4, 3.5, -0.7, 0}, { 0, 1, 0, 1}, { 0, 0, 0, 0 }},
+          { { -1.3, 2, 1, 0}, { 1.3, 4, 1.2, 0}, { 0, 0, 1, 1}, { 1, 1, 1, 0 }},
   };
 
   GLuint triangle_buf;
   glGenBuffers(1, &triangle_buf);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, triangle_buf);
   glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(triangles), triangles, GL_STATIC_DRAW);
+
+  GLuint boundingBox_buf;
+  glGenBuffers(1, &boundingBox_buf);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, boundingBox_buf);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(boundingBoxes), boundingBoxes, GL_STATIC_DRAW);
 
   GLuint ray_buf;
   glGenBuffers(1, &ray_buf);
@@ -281,9 +449,16 @@ int main() {
 
   Vector3 eye(0,0,0);
   Vector3 viewdir(0,1,0);
-  float d = 1;
+  float d = 1.4;
   while (!glfwWindowShouldClose(window))
   {
+    eye.y += 0.001f;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, boundingBox_buf);
+    AABB* boxes = (AABB*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_WRITE);
+    boxes[2].vmin.y += 0.003f;
+    boxes[2].vmax.y -= 0.003f;
+    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+
     glUseProgram(cs_gen_rays);
     glUniform1f(0, glfwGetTime());
     glUniform3f(1, eye.x, eye.y, eye.z);
@@ -298,6 +473,7 @@ int main() {
     glBindImageTexture(0, texture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, triangle_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ray_buf);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, boundingBox_buf);
     glDispatchCompute(640 / 16, 480 / 16, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
