@@ -262,11 +262,24 @@ bool intersect(inout Ray ray, int index) {
 
 
 vec3 sampleHalfDome(vec3 normal) {
-   float x = rand();
-   float y = rand();
-   float z = rand();
-   vec3 ret = vec3(x,y,z);
+   float x = rand() * 2 - 1;
+   float y = rand() * 2 - 1;
+   float z = rand() * 2 - 1;
+   vec3 ret = normalize(vec3(x,y,z));
    return dot(ret, normal) < 0 ? -ret : ret;
+}
+
+vec3 sampleHalfDome2(mat3 TBN)
+{
+    float u1 = rand() * 2 - 1;
+    float u2 = rand() * 2 - 1;
+    float r = sqrt(u1);
+    float theta = 2 * 3.1415 * u2;
+
+    float x = r * cos(theta);
+    float y = r * sin(theta);
+
+    return TBN * vec3(x, y, sqrt(max(0.0f, 1 - u1)));
 }
 
 vec3 recoverNormalFromAABB(int index, vec3 point)
@@ -285,43 +298,57 @@ void main()
 {
   seed = vec3(gl_GlobalInvocationID.xy, time);
   ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
-  imageStore(destTex, storePos, vec4(0) );
 
   Ray ray = rays[storePos.x + screen_size.x * storePos.y];
 
   int collider = -1;
 
-  for(int b=0; b<3; b++)
+  for(int b=0; b<5; b++)
   {
       if (intersect(ray, b))
          collider = b;
   }
 
-  if (collider == -1) return;
+  if (collider == -1) {
+    imageStore(destTex, storePos, vec4(0) );
+    return;
+  }
 
   vec3 point = ray.origin.xyz + ray.direction.xyz * ray.origin.w;
   vec3 normal = recoverNormalFromAABB(collider, point);
+  vec3 rand_vec = normalize(vec3(rand()*2-1, rand()*2-1, rand()*2-1));
+  vec3 tangent = normalize(cross(normal, rand_vec));
+  vec3 bitangent = -normalize(cross(normal, tangent));
+  mat3 TBN = mat3(bitangent, tangent, normal);
+
 
   // shadow rays;
   vec4 totalLight = vec4(0);
-  for(int i=0; i<400; i++) {
+  for(int i=0; i<10; i++) {
     Ray shadowRay;
     shadowRay.origin = vec4(ray.origin.xyz + (ray.origin.w - 0.001) * ray.direction.xyz, 100);
-    shadowRay.direction = vec4(vec3(0,0,1)*0.7 + 0.3*sampleHalfDome(normal),0);
+    shadowRay.direction = vec4(sampleHalfDome2(TBN),0);
 
     int lightsource = -1;
-    for(int b=0; b<3; b++)
+    for(int b=0; b<5; b++)
     {
         if (intersect(shadowRay, b))
            lightsource = b;
     }
 
-    if (lightsource == -1) continue;
-    totalLight += boundingBoxes[lightsource].luminance;
+    if (lightsource == -1) {
+      totalLight += vec4(0.1);
+      continue;
+    }
+
+    float lightDis2 = max(dot(shadowRay.origin.w, shadowRay.origin.w), 0) + 1;
+    totalLight += boundingBoxes[lightsource].luminance * max(dot(shadowRay.direction.xyz,normal),0) / lightDis2;
   }
-  totalLight /= 400;
-  vec4 color = boundingBoxes[collider].color * totalLight;
-  imageStore(destTex, storePos, color );
+  totalLight /= 10;
+  vec4 color = boundingBoxes[collider].color * totalLight + boundingBoxes[collider].luminance;
+  vec4 oldcolor = imageLoad(destTex, storePos);
+  float a = 0.98;
+  imageStore(destTex, storePos, color * (1-a) + a*oldcolor);
 }
 )";
 
@@ -393,10 +420,12 @@ int main() {
           { { 1, 0, -1, 0}, {1, 4, -1, 0}, { -1, 0, -1, 0}, {1,1,1,1} },
   };
 
-  AABB boundingBoxes[3] = {
+  AABB boundingBoxes[5] = {
           { { -1, 2, -1, 0}, { 1, 4, -1.2, 0}, { 1, 0, 0, 1}, { 0, 0, 0, 0 }},
           { { -0.4, 2.5, -0.2, 0}, { 0.4, 3.5, -0.7, 0}, { 0, 1, 0, 1}, { 0, 0, 0, 0 }},
-          { { -1.3, 2, 1, 0}, { 1.3, 4, 1.2, 0}, { 0, 0, 1, 1}, { 1, 1, 1, 0 }},
+          { { -0.3, 1.7, 1, 0}, { 0.3, 3.3, 1.2, 0}, { 0, 0, 1, 1}, { 100, 100, 100, 0 }},
+          { { -1, 0, -1, 0}, { -1.1, 4, 1, 0}, { 0, 0, 1, 1}, { 0.1, 0.1, 0, 0 }},
+          { { 1, 0, -1, 0}, { 1.1, 4, 1, 0}, { 0, 0, 1, 1}, { 0.1, 0.1, 0, 0 }},
   };
 
   GLuint triangle_buf;
@@ -452,11 +481,10 @@ int main() {
   float d = 1.4;
   while (!glfwWindowShouldClose(window))
   {
-    eye.y += 0.001f;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, boundingBox_buf);
     AABB* boxes = (AABB*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_WRITE);
-    boxes[2].vmin.y += 0.003f;
-    boxes[2].vmax.y -= 0.003f;
+    boxes[2].vmin.x += 0.001f;
+    boxes[2].vmax.x += 0.001f;
     glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
     glUseProgram(cs_gen_rays);
