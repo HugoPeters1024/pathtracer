@@ -294,60 +294,58 @@ vec3 recoverNormalFromAABB(int index, vec3 point)
       return vec3(0);
 }
 
+int queryScene(inout Ray ray)
+{
+  int c = -1;
+  for(int i=0; i<5; i++)
+  {
+      if (intersect(ray, i)) c = i;
+  }
+  return c;
+}
+
 void main()
 {
   seed = vec3(gl_GlobalInvocationID.xy, time);
   ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
+  vec4 color = vec4(0);
 
   Ray ray = rays[storePos.x + screen_size.x * storePos.y];
 
-  int collider = -1;
+  int collider = queryScene(ray);
+  if (collider != -1) {
 
-  for(int b=0; b<5; b++)
-  {
-      if (intersect(ray, b))
-         collider = b;
-  }
+    vec3 point = ray.origin.xyz + ray.direction.xyz * ray.origin.w;
+    vec3 normal = recoverNormalFromAABB(collider, point);
+    vec3 rand_vec = normalize(vec3(rand()*2-1, rand()*2-1, rand()*2-1));
+    vec3 tangent = normalize(cross(normal, rand_vec));
+    vec3 bitangent = -normalize(cross(normal, tangent));
+    mat3 TBN = mat3(bitangent, tangent, normal);
 
-  if (collider == -1) {
-    imageStore(destTex, storePos, vec4(0) );
-    return;
-  }
-
-  vec3 point = ray.origin.xyz + ray.direction.xyz * ray.origin.w;
-  vec3 normal = recoverNormalFromAABB(collider, point);
-  vec3 rand_vec = normalize(vec3(rand()*2-1, rand()*2-1, rand()*2-1));
-  vec3 tangent = normalize(cross(normal, rand_vec));
-  vec3 bitangent = -normalize(cross(normal, tangent));
-  mat3 TBN = mat3(bitangent, tangent, normal);
-
-
-  // shadow rays;
-  vec4 totalLight = vec4(0);
-  for(int i=0; i<10; i++) {
     Ray shadowRay;
-    shadowRay.origin = vec4(ray.origin.xyz + (ray.origin.w - 0.001) * ray.direction.xyz, 100);
-    shadowRay.direction = vec4(sampleHalfDome2(TBN),0);
+    shadowRay.origin = vec4(ray.origin.xyz + (ray.origin.w - 0.001) * ray.direction.xyz, 0);
 
-    int lightsource = -1;
-    for(int b=0; b<5; b++)
-    {
-        if (intersect(shadowRay, b))
-           lightsource = b;
+    // shadow rays;
+    vec4 totalLight = vec4(0);
+    for(int i=0; i<100; i++) {
+      shadowRay.origin.w = 100;
+      shadowRay.direction = vec4(sampleHalfDome2(TBN),0);
+
+      int lightsource = queryScene(shadowRay);
+      if (lightsource == -1) {
+        totalLight += vec4(0.0);
+        continue;
+      }
+
+      float lightDis2 = max(dot(shadowRay.origin.w, shadowRay.origin.w), 0) + 1;
+      totalLight += boundingBoxes[lightsource].luminance * max(dot(shadowRay.direction.xyz,normal),0) / lightDis2;
     }
-
-    if (lightsource == -1) {
-      totalLight += vec4(0.1);
-      continue;
-    }
-
-    float lightDis2 = max(dot(shadowRay.origin.w, shadowRay.origin.w), 0) + 1;
-    totalLight += boundingBoxes[lightsource].luminance * max(dot(shadowRay.direction.xyz,normal),0) / lightDis2;
+    totalLight /= 100;
+    color += boundingBoxes[collider].color * totalLight + boundingBoxes[collider].luminance;
   }
-  totalLight /= 10;
-  vec4 color = boundingBoxes[collider].color * totalLight + boundingBoxes[collider].luminance;
+
   vec4 oldcolor = imageLoad(destTex, storePos);
-  float a = 0.98;
+  float a = 0.80;
   imageStore(destTex, storePos, color * (1-a) + a*oldcolor);
 }
 )";
@@ -424,8 +422,8 @@ int main() {
           { { -1, 2, -1, 0}, { 1, 4, -1.2, 0}, { 1, 0, 0, 1}, { 0, 0, 0, 0 }},
           { { -0.4, 2.5, -0.2, 0}, { 0.4, 3.5, -0.7, 0}, { 0, 1, 0, 1}, { 0, 0, 0, 0 }},
           { { -0.3, 1.7, 1, 0}, { 0.3, 3.3, 1.2, 0}, { 0, 0, 1, 1}, { 100, 100, 100, 0 }},
-          { { -1, 0, -1, 0}, { -1.1, 4, 1, 0}, { 0, 0, 1, 1}, { 0.1, 0.1, 0, 0 }},
-          { { 1, 0, -1, 0}, { 1.1, 4, 1, 0}, { 0, 0, 1, 1}, { 0.1, 0.1, 0, 0 }},
+          { { -1, 0, -1, 0}, { -1.1, 4, 1, 0}, { 0, 0, 1, 1}, { 0, 0, 0, 0 }},
+          { { 1, 0, -1, 0}, { 1.1, 4, 1, 0}, { 0, 0, 1, 1}, { 0, 0, 0, 0 }},
   };
 
   GLuint triangle_buf;
