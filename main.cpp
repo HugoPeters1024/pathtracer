@@ -5,6 +5,8 @@
 #define GL3_PROTOTYPES      1
 
 #define EPS 0.001
+#define WIDTH 1024
+#define HEIGHT 768
 #include <GLFW/glfw3.h>
 #include "gl_utils/vec.h"
 #include "gl_utils/shader_utils.h"
@@ -59,9 +61,9 @@ layout(std430, binding = 2) buffer rayBuf
 void main()
 {
   ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
-  if (storePos.x >= 640 || storePos.y >= 480) return;
+  if (storePos.x >= 1024 || storePos.y >= 768) return;
 
-  vec2 uv = vec2(float(gl_GlobalInvocationID.x), float(gl_GlobalInvocationID.y)) / vec2(640, 480);
+  vec2 uv = vec2(float(gl_GlobalInvocationID.x), float(gl_GlobalInvocationID.y)) / vec2(1024, 768);
   uv = uv * 2 - vec2(1);
 
   vec3 tangent = cross(viewdir, vec3(0,0,1));
@@ -75,7 +77,7 @@ void main()
   ray.origin = vec4(point, 100);
   ray.direction = vec4(dir, 0);
 
-  rays[storePos.x + 640 * storePos.y] = ray;
+  rays[storePos.x + 1024 * storePos.y] = ray;
 }
 )";
 
@@ -122,7 +124,7 @@ layout(std430, binding = 3) buffer aabbBuf
 
 layout(location = 0) uniform float time;
 
-ivec2 screen_size = ivec2(640, 480);
+ivec2 screen_size = ivec2(1024, 480);
 vec3 seed;
 
 // A single iteration of Bob Jenkins' One-At-A-Time hashing algorithm.
@@ -259,15 +261,17 @@ bool intersect(inout Ray ray, int index) {
     return false;
 }
 
+vec3 sampleHalfDome(vec3 w) {
+   // create 2 random numbers
+   float r1 = 2 * 3.1415927 * rand(); // pick random number on unit circle (radius = 1, circumference = 2*Pi) for azimuth
+   float r2 = rand();    // pick random number for elevation
+   float r2s = sqrt(r2);
 
-
-vec3 sampleHalfDome(vec3 normal) {
-   float x = rand() * 2 - 1;
-   float y = rand() * 2 - 1;
-   float z = rand() * 2 - 1;
-   vec3 ret = normalize(vec3(x,y,z));
-   return dot(ret, normal) < 0 ? -ret : ret;
+   vec3 u = normalize(cross((abs(w.x) > .1 ? vec3(0, 1, 0) : vec3(1, 0, 0)), w));
+   vec3 v = cross(w,u);
+   return normalize(u*cos(r1)*r2s + v*sin(r1)*r2s + w*sqrt(1 - r2));
 }
+
 
 vec3 sampleHalfDome2(mat3 TBN)
 {
@@ -280,6 +284,14 @@ vec3 sampleHalfDome2(mat3 TBN)
     float y = r * sin(theta);
 
     return TBN * vec3(x, y, sqrt(max(0.0f, 1 - u1)));
+}
+
+vec3 sampleLightDir(vec3 o)
+{
+    int id = int(rand() * 6);
+    vec3 origin = boundingBoxes[id].vmin.xyz;
+    vec3 dir = origin - boundingBoxes[id].vmax.xyz;
+    return normalize(vec3(origin.x + rand() * dir.x, origin.y + rand() * dir.y, origin.z + rand() * dir.z) - o);
 }
 
 vec3 recoverNormalFromAABB(int index, vec3 point)
@@ -297,56 +309,56 @@ vec3 recoverNormalFromAABB(int index, vec3 point)
 int queryScene(inout Ray ray)
 {
   int c = -1;
-  for(int i=0; i<5; i++)
+  for(int i=0; i<6; i++)
   {
       if (intersect(ray, i)) c = i;
   }
   return c;
 }
 
-void main()
-{
-  seed = vec3(gl_GlobalInvocationID.xy, time);
-  ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
-  vec4 color = vec4(0);
+vec4 sampleRay(in Ray ray) {
+  vec4 accucolor = vec4(0);
+  vec4 mask = vec4(1);
+  for(int i=0; i<4; i++) {
+    int collider = queryScene(ray);
 
-  Ray ray = rays[storePos.x + screen_size.x * storePos.y];
-
-  int collider = queryScene(ray);
-  if (collider != -1) {
+    // miss! return black
+    if (collider == -1) return accucolor + vec4(0.4, 0.4, 0.6, 0.6);
 
     vec3 point = ray.origin.xyz + ray.direction.xyz * ray.origin.w;
     vec3 normal = recoverNormalFromAABB(collider, point);
     vec3 rand_vec = normalize(vec3(rand()*2-1, rand()*2-1, rand()*2-1));
     vec3 tangent = normalize(cross(normal, rand_vec));
-    vec3 bitangent = -normalize(cross(normal, tangent));
+    vec3 bitangent = normalize(cross(normal, tangent));
     mat3 TBN = mat3(bitangent, tangent, normal);
 
-    Ray shadowRay;
-    shadowRay.origin = vec4(ray.origin.xyz + (ray.origin.w - 0.001) * ray.direction.xyz, 0);
+    accucolor += mask * boundingBoxes[collider].luminance;
 
-    // shadow rays;
-    vec4 totalLight = vec4(0);
-    for(int i=0; i<100; i++) {
-      shadowRay.origin.w = 100;
-      shadowRay.direction = vec4(sampleHalfDome2(TBN),0);
+    // Construct new ray
+    ray.origin = vec4(ray.origin.xyz + ray.direction.xyz * (ray.origin.w - 0.001), 100);
+    ray.direction.xyz = sampleHalfDome(normal);
 
-      int lightsource = queryScene(shadowRay);
-      if (lightsource == -1) {
-        totalLight += vec4(0.0);
-        continue;
-      }
-
-      float lightDis2 = max(dot(shadowRay.origin.w, shadowRay.origin.w), 0) + 1;
-      totalLight += boundingBoxes[lightsource].luminance * max(dot(shadowRay.direction.xyz,normal),0) / lightDis2;
-    }
-    totalLight /= 100;
-    color += boundingBoxes[collider].color * totalLight + boundingBoxes[collider].luminance;
+    mask *= boundingBoxes[collider].color;
+    mask *= dot(ray.direction.xyz, normal);
+    mask *= 1.5;
   }
 
+  return accucolor;
+}
+
+void main()
+{
+  seed = vec3(gl_GlobalInvocationID.xy, time) * time;
+  ivec2 storePos = ivec2(gl_GlobalInvocationID.xy);
+
+  Ray ray = rays[storePos.x + screen_size.x * storePos.y];
+  ray.origin.x += rand() * 2.0 / screen_size.x;
+  ray.origin.z += rand() * 2.0 / screen_size.y;
+  vec4 color = sampleRay(ray);
+
   vec4 oldcolor = imageLoad(destTex, storePos);
-  float a = 0.80;
-  imageStore(destTex, storePos, color * (1-a) + a*oldcolor);
+  float a = 0.999;
+  imageStore(destTex, storePos, color * (1-a) + a * oldcolor);
 }
 )";
 
@@ -391,13 +403,14 @@ int main() {
 
   glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
   glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 5);
-  GLFWwindow* window = glfwCreateWindow(640, 480, "Pathtracer", NULL, NULL);
+  GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Pathtracer", NULL, NULL);
   if (!window)
   {
     return -3;
   }
   glfwMakeContextCurrent(window);
   glDisable(GL_DEPTH_TEST);
+  glfwSwapInterval(0);
 
   auto cs_gen_rays = GenerateProgram(CompileShader(GL_COMPUTE_SHADER, cs_genrays_shader));
 
@@ -418,12 +431,13 @@ int main() {
           { { 1, 0, -1, 0}, {1, 4, -1, 0}, { -1, 0, -1, 0}, {1,1,1,1} },
   };
 
-  AABB boundingBoxes[5] = {
-          { { -1, 2, -1, 0}, { 1, 4, -1.2, 0}, { 1, 0, 0, 1}, { 0, 0, 0, 0 }},
-          { { -0.4, 2.5, -0.2, 0}, { 0.4, 3.5, -0.7, 0}, { 0, 1, 0, 1}, { 0, 0, 0, 0 }},
-          { { -0.3, 1.7, 1, 0}, { 0.3, 3.3, 1.2, 0}, { 0, 0, 1, 1}, { 100, 100, 100, 0 }},
-          { { -1, 0, -1, 0}, { -1.1, 4, 1, 0}, { 0, 0, 1, 1}, { 0, 0, 0, 0 }},
-          { { 1, 0, -1, 0}, { 1.1, 4, 1, 0}, { 0, 0, 1, 1}, { 0, 0, 0, 0 }},
+  AABB boundingBoxes[6] = {
+          { { -1, 0, -1, 0}, { 1, 4, -1.2, 0}, { 1, 1, 1, 1}, { 0, 0, 0, 0 }},
+          { { -0.4, 1.5, -0.2, 0}, { 0.4, 2.5, -0.7, 0}, { 0.8, 0.3, 0.4, 1}, { 0.0, 0.0, 0.0, 0 }},
+          { { -0.3, 0, 1, 0}, { 0.3, 2.3, 1.2, 0}, { 0, 0, 1, 1}, { 2, 2, 2, 0 }},
+          { { -1, 0, -1, 0}, { -1.1, 4, 1, 0}, { 1, 0, 0, 1}, { 0, 0, 0.0, 0 }},
+          { { 1, 0, -1, 0}, { 1.1, 4, 1, 0}, { 1, 0, 1, 1}, { 0, 0, 0, 0 }},
+          { { -5, 3.3, -5, 0}, { 5, 3.4, 1, 0}, { 0, 1, 1, 1}, { 0, 0, 0, 0 }},
   };
 
   GLuint triangle_buf;
@@ -439,12 +453,12 @@ int main() {
   GLuint ray_buf;
   glGenBuffers(1, &ray_buf);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, ray_buf);
-  glBufferData(GL_SHADER_STORAGE_BUFFER, 640 * 480 * sizeof(Ray), nullptr, GL_DYNAMIC_DRAW);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, WIDTH * HEIGHT * sizeof(Ray), nullptr, GL_DYNAMIC_DRAW);
 
   GLuint texture;
   glGenTextures(1, &texture);
   glBindTexture(GL_TEXTURE_2D, texture);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, 640, 480, 0, GL_RGBA, GL_FLOAT, nullptr);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, WIDTH, HEIGHT, 0, GL_RGBA, GL_FLOAT, nullptr);
   glTextureParameteri(texture, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTextureParameteri(texture, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
@@ -479,11 +493,11 @@ int main() {
   float d = 1.4;
   while (!glfwWindowShouldClose(window))
   {
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, boundingBox_buf);
-    AABB* boxes = (AABB*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_WRITE);
-    boxes[2].vmin.x += 0.001f;
-    boxes[2].vmax.x += 0.001f;
-    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+  //  glBindBuffer(GL_SHADER_STORAGE_BUFFER, boundingBox_buf);
+ //   AABB* boxes = (AABB*)glMapBuffer(GL_SHADER_STORAGE_BUFFER, GL_READ_WRITE);
+   // boxes[2].vmin.z -= 0.001f;
+    //boxes[2].vmax.z -= 0.001f;
+//    glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
     glUseProgram(cs_gen_rays);
     glUniform1f(0, glfwGetTime());
@@ -491,7 +505,7 @@ int main() {
     glUniform3f(2, viewdir.x, viewdir.y, viewdir.z);
     glUniform1f(3, d);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ray_buf);
-    glDispatchCompute(640 / 16, 480 / 16, 1);
+    glDispatchCompute(WIDTH / 16, HEIGHT / 16, 1);
     glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     glUseProgram(cs_program);
@@ -500,7 +514,7 @@ int main() {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, triangle_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ray_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, boundingBox_buf);
-    glDispatchCompute(640 / 16, 480 / 16, 1);
+    glDispatchCompute(WIDTH / 16, HEIGHT / 16, 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
