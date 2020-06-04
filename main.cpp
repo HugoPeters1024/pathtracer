@@ -41,7 +41,7 @@ void main()
 
 static const char* cs_genrays_shader = R"(
 #version 450
-layout(local_size_x = 16, local_size_y = 16) in;
+layout(local_size_x = 32, local_size_y = 32) in;
 
 layout(location = 0) uniform float time;
 layout(location = 1) uniform vec3 eye;
@@ -83,7 +83,7 @@ void main()
 
 static const char* cs_pathtrace_shader = R"(
 #version 450
-layout(local_size_x = 16, local_size_y = 16) in;
+layout(local_size_x = 32, local_size_y = 32) in;
 
 layout(binding = 0, rgba32f) uniform image2D destTex;
 
@@ -319,11 +319,11 @@ int queryScene(inout Ray ray)
 vec4 sampleRay(in Ray ray) {
   vec4 accucolor = vec4(0);
   vec4 mask = vec4(1);
-  for(int i=0; i<4; i++) {
+  for(int i=0; i<5; i++) {
     int collider = queryScene(ray);
 
     // miss! return black
-    if (collider == -1) return accucolor + vec4(0.4, 0.4, 0.6, 0.6);
+    if (collider == -1) return accucolor + vec4(0.0, 0.0, 0.0, 0.6) * mask;
 
     vec3 point = ray.origin.xyz + ray.direction.xyz * ray.origin.w;
     vec3 normal = recoverNormalFromAABB(collider, point);
@@ -357,7 +357,7 @@ void main()
   vec4 color = sampleRay(ray);
 
   vec4 oldcolor = imageLoad(destTex, storePos);
-  float a = 0.999;
+  float a = 0.9999;
   imageStore(destTex, storePos, color * (1-a) + a * oldcolor);
 }
 )";
@@ -434,7 +434,7 @@ int main() {
   AABB boundingBoxes[6] = {
           { { -1, 0, -1, 0}, { 1, 4, -1.2, 0}, { 1, 1, 1, 1}, { 0, 0, 0, 0 }},
           { { -0.4, 1.5, -0.2, 0}, { 0.4, 2.5, -0.7, 0}, { 0.8, 0.3, 0.4, 1}, { 0.0, 0.0, 0.0, 0 }},
-          { { -0.3, 0, 1, 0}, { 0.3, 2.3, 1.2, 0}, { 0, 0, 1, 1}, { 2, 2, 2, 0 }},
+          { { -0.3, 0, 0.5, 0}, { 0.3, 2.3, 0.7, 0}, { 0, 0, 1, 1}, { 4, 4, 4, 0 }},
           { { -1, 0, -1, 0}, { -1.1, 4, 1, 0}, { 1, 0, 0, 1}, { 0, 0, 0.0, 0 }},
           { { 1, 0, -1, 0}, { 1.1, 4, 1, 0}, { 1, 0, 1, 1}, { 0, 0, 0, 0 }},
           { { -5, 3.3, -5, 0}, { 5, 3.4, 1, 0}, { 0, 1, 1, 1}, { 0, 0, 0, 0 }},
@@ -505,8 +505,8 @@ int main() {
     glUniform3f(2, viewdir.x, viewdir.y, viewdir.z);
     glUniform1f(3, d);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ray_buf);
-    glDispatchCompute(WIDTH / 16, HEIGHT / 16, 1);
-    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+    glDispatchCompute(WIDTH / 32, HEIGHT / 32, 1);
+    //glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
 
     glUseProgram(cs_program);
     glUniform1f(0, glfwGetTime());
@@ -514,8 +514,8 @@ int main() {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, triangle_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ray_buf);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, boundingBox_buf);
-    glDispatchCompute(WIDTH / 16, HEIGHT / 16, 1);
-    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    glDispatchCompute(WIDTH / 32, HEIGHT / 32, 1);
+    //glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glUseProgram(quad_program);
