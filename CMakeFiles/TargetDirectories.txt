@@ -1,0 +1,3 @@
+/home/hugo/repos/pathtracer/CMakeFiles/rebuild_cache.dir
+/home/hugo/repos/pathtracer/CMakeFiles/edit_cache.dir
+/home/hugo/repos/pathtracer/CMakeFiles/pathtracer.dir

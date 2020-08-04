@@ -1,0 +1,1 @@
+/usr/bin/c++  -g   CMakeFiles/pathtracer.dir/main.cpp.o  -o pathtracer  /usr/local/lib/libglfw3.a /usr/lib/x86_64-linux-gnu/libGL.so /usr/lib/x86_64-linux-gnu/libGLU.so /usr/lib/x86_64-linux-gnu/librt.so -lm -ldl /usr/lib/x86_64-linux-gnu/libX11.so -lpthread 

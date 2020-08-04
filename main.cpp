@@ -316,6 +316,25 @@ int queryScene(inout Ray ray)
   return c;
 }
 
+vec4 sampleLight(vec3 origin) {
+    AABB light = boundingBoxes[0];
+    vec3 lightVec = light.vmax.xyz - light.vmin.xyz;
+    vec3 target = light.vmin.xyz + vec3(rand(),rand(),rand()) * lightVec;
+    vec3 towards = target - origin;
+
+    Ray ray;
+    ray.origin = vec4(origin, 100);
+    ray.direction = vec4(normalize(towards), 0);
+
+    int collider = queryScene(ray);
+    if (collider == 0)
+    {
+        return light.luminance;
+    }
+
+    return vec4(0);
+}
+
 vec4 sampleRay(in Ray ray) {
   vec4 accucolor = vec4(0);
   vec4 mask = vec4(1);
@@ -340,11 +359,12 @@ vec4 sampleRay(in Ray ray) {
 
     mask *= boundingBoxes[collider].color;
     mask *= dot(ray.direction.xyz, normal);
-    mask *= 1.5;
+    mask *= 1.0;
   }
 
   return accucolor;
 }
+
 
 void main()
 {
@@ -357,7 +377,7 @@ void main()
   vec4 color = sampleRay(ray);
 
   vec4 oldcolor = imageLoad(destTex, storePos);
-  float a = 0.9999;
+  float a = 0.99;
   imageStore(destTex, storePos, color * (1-a) + a * oldcolor);
 }
 )";
@@ -432,9 +452,9 @@ int main() {
   };
 
   AABB boundingBoxes[6] = {
+          { { -0.3, 0, 0.5, 0}, { 0.3, 2.3, 0.7, 0}, { 0, 0, 1, 1}, { 4, 4, 4, 0 }},
           { { -1, 0, -1, 0}, { 1, 4, -1.2, 0}, { 1, 1, 1, 1}, { 0, 0, 0, 0 }},
           { { -0.4, 1.5, -0.2, 0}, { 0.4, 2.5, -0.7, 0}, { 0.8, 0.3, 0.4, 1}, { 0.0, 0.0, 0.0, 0 }},
-          { { -0.3, 0, 0.5, 0}, { 0.3, 2.3, 0.7, 0}, { 0, 0, 1, 1}, { 4, 4, 4, 0 }},
           { { -1, 0, -1, 0}, { -1.1, 4, 1, 0}, { 1, 0, 0, 1}, { 0, 0, 0.0, 0 }},
           { { 1, 0, -1, 0}, { 1.1, 4, 1, 0}, { 1, 0, 1, 1}, { 0, 0, 0, 0 }},
           { { -5, 3.3, -5, 0}, { 5, 3.4, 1, 0}, { 0, 1, 1, 1}, { 0, 0, 0, 0 }},
